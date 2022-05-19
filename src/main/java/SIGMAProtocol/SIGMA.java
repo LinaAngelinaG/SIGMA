@@ -6,8 +6,8 @@ public interface SIGMA {
         String mes = userFrom.startSession();
         mes = userTo.giveResponse(mes);
         mes = userFrom.finaliseConnection(mes);
-        if(userTo.doFinalVerificationWithProtocol(mes)){
-            System.out.println("Success connection throught SIGMA protocol");
+        if(! userTo.doFinalVerificationWithProtocol(mes)){
+            throw new RuntimeException("Failed connection throught SIGMA protocol");
         }
     }
 

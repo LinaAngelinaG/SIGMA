@@ -60,8 +60,7 @@ public class User {
         keyPair = ecdh.getKeyPair();
         try {
             rB = generateByteArray();
-            calculateKey_m();
-            calculateKey_e();
+            calculateKeys();
             ecdsa.init(keyPair);
             hmac.setKey(key_m);
             cipher.init(Cipher.ENCRYPT_MODE,
@@ -78,30 +77,27 @@ public class User {
         }
     }
 
-    private void calculateKey_e(){
-        key_e = ECDH.GetSecret(keyPair.getPrivate(),
-                publicKeyAnother).getEncoded();
-    }
-
-    private void calculateKey_m(){
+    private void calculateKeys(){
         try {
-            hmac.MacAddBlock(rA);
-            hmac.MacAddBlock(rB);
-            key_m = hmac.MacFinalize();
+            byte[] secret = ECDH.GetSecret(keyPair.getPrivate(),
+                    publicKeyAnother).getEncoded();
+            hmac.setKey(concatenate(rA,rB));
+            secret = hmac.ComputeMac(secret);
+            key_m = Arrays.copyOfRange(secret,0,sizeOfArr);
+            key_e = Arrays.copyOfRange(secret,sizeOfArr,secret.length);
         } catch (IOException | NoSuchAlgorithmException e) {
             throw new RuntimeException(e);
         }
     }
     protected String finaliseConnection(String message) throws RuntimeException {
         try {
-            calculateKey_e();
+            calculateKeys();
             cipher.init(Cipher.DECRYPT_MODE,
                     new SecretKeySpec(key_e,0, key_e.length, "AES"));
             byte[] decrypred = cipher.doFinal(message.getBytes());
             gain_rB(decrypred);
-            calculateKey_m();
             if(!verification(decrypred)){
-                System.out.println("Verification of signature in gained message is failed");
+                throw new RuntimeException("Verification of signature in gained message is failed");
             };
             return getFinalAnswer(message);
         } catch (InvalidKeyException |
@@ -111,33 +107,41 @@ public class User {
         }
     }
 
-    protected boolean doFinalVerificationWithProtocol(String message){
+    protected boolean doFinalVerificationWithProtocol(String message) throws RuntimeException {
         try {
             cipher.init(Cipher.DECRYPT_MODE,
                     new SecretKeySpec(key_e,0, key_e.length, "AES"));
             byte[] decrypred = cipher.doFinal(message.getBytes());
             int len = decrypred.length - hmac.getByteBlockSize();
+            byte[] ver1 = Arrays.copyOfRange(decrypred,0,sizeOfResponse);
+            byte[] macVer = Arrays.copyOfRange(decrypred,
+                    decrypred.length-sizeOfArr*2, decrypred.length);
+            if(!Arrays.equals(hmac.ComputeMac(ver1),macVer)){
+                throw new RuntimeException("Authentication failed");
+            }
             byte[] signature = Arrays.copyOfRange(decrypred,sizeOfResponse,len);
             return ecdsa.VERIFY(concat(),signature);
         } catch (InvalidKeyException |
                  BadPaddingException |
-                 IllegalBlockSizeException e) {
+                 IllegalBlockSizeException |
+                 NoSuchAlgorithmException |
+                 IOException e) {
             throw new RuntimeException(e);
         }
     }
 
     private String getFinalAnswer(String message){
         try {
-            StringBuilder builder = new StringBuilder();
-            StringBuilder builder1 = new StringBuilder();
-            builder1.append(publicKeyAnother).append(keyPair.getPublic());
-            builder
-                    .append(message)
-                    .append(ecdsa.SIGN(builder1
-                            .toString()
-                            .getBytes() ) )
-                    .append(hmac.ComputeMac(message.getBytes()));
-            return builder.toString();
+            byte[] concat = concatenate(publicKeyAnother.getEncoded(),
+                    keyPair.getPrivate().getEncoded());
+            return Arrays.toString(
+                    concatenate(
+                            concatenate(
+                                    concatenate(
+                                            message.getBytes(),
+                                            ecdsa.SIGN(concat).getBytes()),
+                                    ecdsa.SIGN(concat).getBytes()),
+                            hmac.ComputeMac(message.getBytes()) ));
         } catch (NoSuchAlgorithmException e) {
             throw new RuntimeException(e);
         } catch (IOException e) {
@@ -161,40 +165,50 @@ public class User {
         secureRandom.nextBytes(result);
         return result;
     }
-    private String getB(byte[] arr){
-        StringBuilder builder = new StringBuilder();
-        builder.append(keyPair.getPublic())
-                .append(arr);
-        return builder.toString();
+    private String getB(byte[] arr2){
+        byte[] arr1 = keyPair.getPublic().getEncoded();
+        return Arrays.toString(concatenate(arr1,arr2));
     }
     private byte[] getA(String s) throws NoSuchAlgorithmException, IOException {
-        StringBuilder builder = new StringBuilder();
-        StringBuilder builder1 = new StringBuilder();
-        builder1.append(publicKeyAnother).append(keyPair.getPrivate());
-        builder
-                .append(keyPair.getPublic())
-                .append(rB)
-                .append(s)
-                .append(ecdsa.SIGN(builder1
-                        .toString()
-                        .getBytes()) )
-                .append(hmac.ComputeMac(s.getBytes()) );
-        return builder.toString().getBytes();
+        byte[] concat = concatenate(publicKeyAnother.getEncoded(),keyPair.getPrivate().getEncoded());
+        return concatenate(
+                concatenate(
+                        concatenate(
+                                concatenate(
+                                        keyPair.getPublic().getEncoded(),
+                                        rB),
+                                s.getBytes()),
+                        ecdsa.SIGN(concat).getBytes()),
+                hmac.ComputeMac(s.getBytes()) );
     }
 
     private boolean verification(byte[] message){
-        int len = publicKeyAnother.getEncoded().length;
-        byte[] sign = Arrays.copyOfRange(message,
-                rB.length+len,
-                message.length-hmac.getByteBlockSize());
-        return ecdsa.VERIFY(concat(),sign);
+        try {
+            int len = publicKeyAnother.getEncoded().length;
+            int len1 = len + sizeOfArr;
+            byte[] ver1 = Arrays.copyOfRange(message,len1,len1+len+sizeOfArr);
+            byte[] macVer = Arrays.copyOfRange(message,
+                    message.length-sizeOfArr*2, message.length);
+            if(!Arrays.equals(hmac.ComputeMac(ver1),macVer)){
+                throw new RuntimeException("Authentication failed");
+            }
+            byte[] sign = Arrays.copyOfRange(message,
+                    rB.length+len,
+                    message.length-hmac.getByteBlockSize());
+            return ecdsa.VERIFY(concat(),sign);
+        } catch (NoSuchAlgorithmException | IOException e) {
+            throw new RuntimeException(e);
+        }
     }
     private byte[] concat(){
-        StringBuilder stringBuilder = new StringBuilder();
-        return stringBuilder
-                .append(publicKeyAnother)
-                .append(keyPair.getPublic())
-                .toString()
-                .getBytes();
+        return concatenate(publicKeyAnother.getEncoded(),keyPair.getPublic().getEncoded());
+    }
+
+    private byte[] concatenate(byte[] arr1, byte[] arr2){
+        byte[] result = new byte[arr1.length*2];
+        for(int i=0;i<result.length;++i){
+            result[i] = i < result.length/2? arr1[i] : arr2[i];
+        }
+        return result;
     }
 }
